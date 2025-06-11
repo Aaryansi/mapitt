@@ -1,0 +1,56 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Route {
+  id          String      @id @default(cuid())
+  name        String
+  description String?
+  waypoints   Waypoint[]
+  segments    Segment[]
+  metadata    Json?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+}
+
+model Waypoint {
+  id          String    @id @default(cuid())
+  routeId     String
+  route       Route     @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  order       Int
+  latitude    Float
+  longitude   Float
+  name        String?
+  description String?
+  photos      String[]
+  icon        String?
+  timestamp   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([routeId])
+}
+
+model Segment {
+  id            String   @id @default(cuid())
+  routeId       String
+  route         Route    @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  order         Int
+  startLat      Float
+  startLng      Float
+  endLat        Float
+  endLng        Float
+  mode          String   // driving, cycling, walking, transit
+  distance      Float?   // in meters
+  duration      Float?   // in seconds
+  polyline      String?  // encoded polyline
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([routeId])
+}

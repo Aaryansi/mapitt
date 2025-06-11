@@ -1,0 +1,14 @@
+{
+  "name": "mapit",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@8.15.1",
+  "scripts": {
+    "dev": "echo 'Run pnpm dev from specific workspace'",
+    "build": "echo 'Run pnpm build from specific workspace'",
+    "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules"
+  },
+  "devDependencies": {
+    "prettier": "^3.2.5"
+  }
+}
