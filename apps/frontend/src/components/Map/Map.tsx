@@ -30,11 +30,41 @@ export function Map({ segments, darkMode = false }: MapProps) {
   const markersRef = useRef<mapboxgl.Marker[]>([]);
   const animationRef = useRef<number | null>(null);
   const [isAnimating, setIsAnimating] = useState(false);
+  const [currentSegment, setCurrentSegment] = useState<number | null>(null);
+  const [routeInfo, setRouteInfo] = useState<{
+    distance: number;
+    duration: number;
+    mode: string;
+  } | null>(null);
+
+  // Calculate distance between two points in kilometers
+  const calculateDistance = (start: [number, number], end: [number, number]): number => {
+    const R = 6371; // Earth's radius in km
+    const dLat = (end[1] - start[1]) * Math.PI / 180;
+    const dLon = (end[0] - start[0]) * Math.PI / 180;
+    const a = 
+      Math.sin(dLat/2) * Math.sin(dLat/2) +
+      Math.cos(start[1] * Math.PI / 180) * Math.cos(end[1] * Math.PI / 180) * 
+      Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+  };
+
+  // Calculate duration based on mode and distance
+  const calculateDuration = (distance: number, mode: string): number => {
+    const speeds = {
+      flight: 800, // km/h
+      drive: 80,   // km/h
+      train: 120,  // km/h
+      walk: 5      // km/h
+    };
+    return (distance / speeds[mode as keyof typeof speeds]) * 60; // in minutes
+  };
 
   // Create curved path for flights
   const createCurvedPath = (start: [number, number], end: [number, number]): number[][] => {
     const points: number[][] = [];
-    const steps = 100;
+    const steps = 200; // Increased for smoother curve
     
     for (let i = 0; i <= steps; i++) {
       const t = i / steps;
@@ -47,7 +77,7 @@ export function Map({ segments, darkMode = false }: MapProps) {
       const distance = Math.sqrt(
         Math.pow(end[0] - start[0], 2) + Math.pow(end[1] - start[1], 2)
       );
-      const curvature = Math.min(distance * 0.15, 15);
+      const curvature = Math.min(distance * 0.2, 20); // Increased curvature
       
       const controlLat = midLat + curvature;
       
@@ -66,21 +96,49 @@ export function Map({ segments, darkMode = false }: MapProps) {
     return points;
   };
 
+  // Get route for ground transport
+  const getGroundRoute = async (start: [number, number], end: [number, number], mode: string): Promise<number[][]> => {
+    try {
+      const response = await fetch(
+        `https://api.mapbox.com/directions/v5/mapbox/${mode}/${start[0]},${start[1]};${end[0]},${end[1]}?geometries=geojson&access_token=${mapboxgl.accessToken}`
+      );
+      const data = await response.json();
+      return data.routes[0].geometry.coordinates;
+    } catch (error) {
+      console.error('Error fetching route:', error);
+      return [start, end];
+    }
+  };
+
   // Animate route drawing
-  const animateRoute = useCallback((segmentIndex: number = 0) => {
+  const animateRoute = useCallback(async (segmentIndex: number = 0) => {
     if (!mapRef.current || !segments || segmentIndex >= segments.length) {
       setIsAnimating(false);
+      setCurrentSegment(null);
+      setRouteInfo(null);
       return;
     }
 
     setIsAnimating(true);
+    setCurrentSegment(segmentIndex);
     const segment = segments[segmentIndex];
-    const isFlight = segment.mode === 'flight';
     
-    // Get path coordinates
-    const pathCoords = isFlight 
-      ? createCurvedPath(segment.from.coordinates, segment.to.coordinates)
-      : [segment.from.coordinates, segment.to.coordinates];
+    // Calculate distance and duration
+    const distance = calculateDistance(segment.from.coordinates, segment.to.coordinates);
+    const duration = calculateDuration(distance, segment.mode);
+    setRouteInfo({
+      distance: Math.round(distance),
+      duration: Math.round(duration),
+      mode: segment.mode
+    });
+
+    // Get path coordinates based on transport mode
+    let pathCoords: number[][];
+    if (segment.mode === 'flight') {
+      pathCoords = createCurvedPath(segment.from.coordinates, segment.to.coordinates);
+    } else {
+      pathCoords = await getGroundRoute(segment.from.coordinates, segment.to.coordinates, segment.mode);
+    }
 
     // Create a GeoJSON LineString
     const routeGeoJson: GeoJSON.Feature<GeoJSON.LineString> = {
@@ -111,7 +169,9 @@ export function Map({ segments, darkMode = false }: MapProps) {
           'line-cap': 'round',
         },
         paint: {
-          'line-color': segment.mode === 'flight' ? '#3b82f6' : '#10b981',
+          'line-color': segment.mode === 'flight' ? '#3b82f6' : 
+                        segment.mode === 'drive' ? '#10b981' :
+                        segment.mode === 'train' ? '#f59e0b' : '#8b5cf6',
           'line-width': 3,
           'line-dasharray': segment.mode === 'flight' ? [0, 4, 3] : [1, 0],
         },
@@ -121,28 +181,28 @@ export function Map({ segments, darkMode = false }: MapProps) {
     // Animate camera along the path
     let currentStep = 0;
     const totalSteps = pathCoords.length - 1;
-    const animationDuration = 3000; // 3 seconds per segment
+    const animationDuration = segment.mode === 'flight' ? 8000 : 5000; // Slower animation
     const stepDuration = animationDuration / totalSteps;
 
     const animate = () => {
       if (currentStep > totalSteps) {
-        // Move to next segment
-        setTimeout(() => animateRoute(segmentIndex + 1), 500);
+        // Move to next segment after a pause
+        setTimeout(() => animateRoute(segmentIndex + 1), 1000);
         return;
       }
 
       const currentCoord = pathCoords[Math.floor(currentStep)];
       
-      // Smooth camera movement
+      // Smooth camera movement with easing
       mapRef.current!.easeTo({
         center: currentCoord as [number, number],
-        zoom: segment.mode === 'flight' ? 5 : 10,
+        zoom: segment.mode === 'flight' ? 4 : 8,
         bearing: 0,
         duration: stepDuration,
-        easing: (t) => t,
+        easing: (t) => t * (2 - t), // Ease-out function for smoother animation
       });
 
-      currentStep += 1;
+      currentStep += 0.5; // Slower progression
       animationRef.current = requestAnimationFrame(animate);
     };
 
@@ -153,13 +213,13 @@ export function Map({ segments, darkMode = false }: MapProps) {
     
     mapRef.current.fitBounds(bounds, {
       padding: 100,
-      duration: 1000,
+      duration: 1500,
     });
 
     // Start animation after initial view
     setTimeout(() => {
       animate();
-    }, 1200);
+    }, 1800);
   }, [segments]);
 
   // Draw all segments at once (no animation)
@@ -350,6 +410,21 @@ export function Map({ segments, darkMode = false }: MapProps) {
   return (
     <div className="relative h-full w-full">
       <div ref={mapContainer} className="h-full w-full" />
+      
+      {/* Route Info Overlay */}
+      {routeInfo && (
+        <div className={`absolute top-4 left-1/2 transform -translate-x-1/2 px-4 py-2 rounded-lg font-medium text-sm ${
+          darkMode ? 'bg-gray-800 text-white' : 'bg-white text-gray-900'
+        } shadow-lg`}>
+          <div className="flex items-center gap-2">
+            <span className="capitalize">{routeInfo.mode}</span>
+            <span>•</span>
+            <span>{routeInfo.distance} km</span>
+            <span>•</span>
+            <span>{routeInfo.duration} min</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
