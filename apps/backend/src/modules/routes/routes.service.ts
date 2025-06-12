@@ -36,7 +36,7 @@ export class RoutesService {
     });
   }
 
-  async findAll(params: {
+  async findMany(params: {
     skip?: number;
     take?: number;
   }) {
@@ -57,6 +57,13 @@ export class RoutesService {
     ]);
 
     return { routes, total };
+  }
+
+  async findAll(params: {
+    skip?: number;
+    take?: number;
+  }) {
+    return this.findMany(params);
   }
 
   async findOne(id: string) {
@@ -100,8 +107,6 @@ export class RoutesService {
       throw new Error('Route must have at least 2 waypoints');
     }
 
-    // For now, create simple segments without OSRM
-    // We'll add OSRM integration later
     const segments = [];
     
     for (let i = 0; i < route.waypoints.length - 1; i++) {
@@ -115,12 +120,10 @@ export class RoutesService {
         startLng: start.longitude,
         endLat: end.latitude,
         endLng: end.longitude,
-        mode: 'driving', // default
-        // We'll calculate distance and duration with OSRM later
+        mode: 'driving',
       });
     }
 
-    // Delete existing segments and create new ones
     await this.prisma.segment.deleteMany({
       where: { routeId },
     });
