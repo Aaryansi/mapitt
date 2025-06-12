@@ -24,6 +24,15 @@ interface MapProps {
   darkMode?: boolean;
 }
 
+interface RouteProgress {
+  mode: string;
+  distance: number;
+  duration: number;
+  progress: number;
+  from: string;
+  to: string;
+}
+
 export function Map({ segments, darkMode = false }: MapProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
@@ -31,11 +40,8 @@ export function Map({ segments, darkMode = false }: MapProps) {
   const animationRef = useRef<number | null>(null);
   const [isAnimating, setIsAnimating] = useState(false);
   const [currentSegment, setCurrentSegment] = useState<number | null>(null);
-  const [routeInfo, setRouteInfo] = useState<{
-    distance: number;
-    duration: number;
-    mode: string;
-  } | null>(null);
+  const [routeProgress, setRouteProgress] = useState<RouteProgress | null>(null);
+  const totalProgressRef = useRef({ distance: 0, duration: 0 });
 
   // Calculate distance between two points in kilometers
   const calculateDistance = (start: [number, number], end: [number, number]): number => {
@@ -61,27 +67,31 @@ export function Map({ segments, darkMode = false }: MapProps) {
     return (distance / speeds[mode as keyof typeof speeds]) * 60; // in minutes
   };
 
+  // Format duration in hours and minutes
+  const formatDuration = (minutes: number): string => {
+    const hours = Math.floor(minutes / 60);
+    const mins = Math.round(minutes % 60);
+    return `${hours}h ${mins}m`;
+  };
+
   // Create curved path for flights
   const createCurvedPath = (start: [number, number], end: [number, number]): number[][] => {
     const points: number[][] = [];
-    const steps = 200; // Increased for smoother curve
+    const steps = 200;
     
     for (let i = 0; i <= steps; i++) {
       const t = i / steps;
       
-      // Calculate control point for bezier curve
       const midLng = (start[0] + end[0]) / 2;
       const midLat = (start[1] + end[1]) / 2;
       
-      // Add curvature based on distance
       const distance = Math.sqrt(
         Math.pow(end[0] - start[0], 2) + Math.pow(end[1] - start[1], 2)
       );
-      const curvature = Math.min(distance * 0.2, 20); // Increased curvature
+      const curvature = Math.min(distance * 0.2, 20);
       
       const controlLat = midLat + curvature;
       
-      // Quadratic bezier curve
       const lng = Math.pow(1 - t, 2) * start[0] + 
                   2 * (1 - t) * t * midLng + 
                   Math.pow(t, 2) * end[0];
@@ -115,7 +125,7 @@ export function Map({ segments, darkMode = false }: MapProps) {
     if (!mapRef.current || !segments || segmentIndex >= segments.length) {
       setIsAnimating(false);
       setCurrentSegment(null);
-      setRouteInfo(null);
+      setRouteProgress(null);
       return;
     }
 
@@ -123,14 +133,9 @@ export function Map({ segments, darkMode = false }: MapProps) {
     setCurrentSegment(segmentIndex);
     const segment = segments[segmentIndex];
     
-    // Calculate distance and duration
-    const distance = calculateDistance(segment.from.coordinates, segment.to.coordinates);
-    const duration = calculateDuration(distance, segment.mode);
-    setRouteInfo({
-      distance: Math.round(distance),
-      duration: Math.round(duration),
-      mode: segment.mode
-    });
+    // Calculate total distance and duration for this segment
+    const totalDistance = calculateDistance(segment.from.coordinates, segment.to.coordinates);
+    const totalDuration = calculateDuration(totalDistance, segment.mode);
 
     // Get path coordinates based on transport mode
     let pathCoords: number[][];
@@ -181,17 +186,32 @@ export function Map({ segments, darkMode = false }: MapProps) {
     // Animate camera along the path
     let currentStep = 0;
     const totalSteps = pathCoords.length - 1;
-    const animationDuration = segment.mode === 'flight' ? 8000 : 5000; // Slower animation
+    const animationDuration = segment.mode === 'flight' ? 8000 : 5000;
     const stepDuration = animationDuration / totalSteps;
 
     const animate = () => {
       if (currentStep > totalSteps) {
+        // Update total progress
+        totalProgressRef.current.distance += totalDistance;
+        totalProgressRef.current.duration += totalDuration;
+        
         // Move to next segment after a pause
         setTimeout(() => animateRoute(segmentIndex + 1), 1000);
         return;
       }
 
+      const progress = currentStep / totalSteps;
       const currentCoord = pathCoords[Math.floor(currentStep)];
+      
+      // Update route progress
+      setRouteProgress({
+        mode: segment.mode,
+        distance: Math.round(totalDistance * progress),
+        duration: Math.round(totalDuration * progress),
+        progress: progress * 100,
+        from: segment.from.name,
+        to: segment.to.name
+      });
       
       // Smooth camera movement with easing
       mapRef.current!.easeTo({
@@ -199,10 +219,10 @@ export function Map({ segments, darkMode = false }: MapProps) {
         zoom: segment.mode === 'flight' ? 4 : 8,
         bearing: 0,
         duration: stepDuration,
-        easing: (t) => t * (2 - t), // Ease-out function for smoother animation
+        easing: (t) => t * (2 - t),
       });
 
-      currentStep += 0.5; // Slower progression
+      currentStep += 0.5;
       animationRef.current = requestAnimationFrame(animate);
     };
 
@@ -411,17 +431,27 @@ export function Map({ segments, darkMode = false }: MapProps) {
     <div className="relative h-full w-full">
       <div ref={mapContainer} className="h-full w-full" />
       
-      {/* Route Info Overlay */}
-      {routeInfo && (
+      {/* Route Progress Overlay */}
+      {routeProgress && (
         <div className={`absolute top-4 left-1/2 transform -translate-x-1/2 px-4 py-2 rounded-lg font-medium text-sm ${
           darkMode ? 'bg-gray-800 text-white' : 'bg-white text-gray-900'
         } shadow-lg`}>
-          <div className="flex items-center gap-2">
-            <span className="capitalize">{routeInfo.mode}</span>
-            <span>•</span>
-            <span>{routeInfo.distance} km</span>
-            <span>•</span>
-            <span>{routeInfo.duration} min</span>
+          <div className="flex flex-col items-center">
+            <div className="flex items-center gap-2">
+              <span className="capitalize">{routeProgress.mode}</span>
+              <span>•</span>
+              <span>{routeProgress.from} → {routeProgress.to}</span>
+            </div>
+            <div className="flex items-center gap-2 mt-1">
+              <span>+{routeProgress.distance} km</span>
+              <span>•</span>
+              <span>+{formatDuration(routeProgress.duration)}</span>
+            </div>
+            {totalProgressRef.current.distance > 0 && (
+              <div className="text-xs mt-1 opacity-75">
+                Total: {Math.round(totalProgressRef.current.distance)} km • {formatDuration(totalProgressRef.current.duration)}
+              </div>
+            )}
           </div>
         </div>
       )}
