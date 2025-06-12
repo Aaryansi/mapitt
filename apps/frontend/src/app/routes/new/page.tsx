@@ -40,6 +40,8 @@ export default function NewRoutePage() {
   const [toLocation, setToLocation] = useState<Location | null>(null);
   const [selectedMode, setSelectedMode] = useState<RouteSegment['mode']>('flight');
   
+  const [traceRequested, setTraceRequested] = useState(false);
+
   const createRoute = trpc.routes.create.useMutation({
     onSuccess: (data) => {
       console.log('Route created:', data);
@@ -116,10 +118,28 @@ export default function NewRoutePage() {
     }
   }, [segments.length, isAddingSegment]);
 
+  // reset traceRequested if user edits
+  useEffect(() => {
+    if (segments.length > 0 && traceRequested) {
+      setTraceRequested(false);
+    }
+  }, [segments, traceRequested]);
+
   return (
     <div className={`flex h-screen ${darkMode ? 'bg-gray-900' : 'bg-gray-100'}`}>
       {/* Sidebar */}
       <div className={`w-96 ${darkMode ? 'bg-gray-800 text-white' : 'bg-white text-gray-900'} overflow-y-auto shadow-xl`}>
+        {/* Live Trace Button (new) */}
+        <div className="p-6 border-b">
+          <button
+            onClick={() => setTraceRequested(true)}
+            disabled={segments.length === 0}
+            className="w-full mb-4 px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition"
+          >
+            Trace Route
+          </button>
+        </div>
+
         {/* Header */}
         <div className={`p-6 border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
           <div className="flex items-center justify-between mb-4">
@@ -315,7 +335,12 @@ export default function NewRoutePage() {
 
       {/* Map */}
       <div className="flex-1">
-        <Map segments={segments} darkMode={darkMode} />
+        <Map
+          segments={segments}
+          darkMode={darkMode}
+          traceRequested={traceRequested}
+          onTraceComplete={() => setTraceRequested(false)}
+        />
       </div>
     </div>
   );

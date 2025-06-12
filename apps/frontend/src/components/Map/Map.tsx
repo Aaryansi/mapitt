@@ -22,6 +22,8 @@ interface MapProps {
     mode: 'flight' | 'drive' | 'train' | 'walk';
   }>;
   darkMode?: boolean;
+  traceRequested?: boolean;
+  onTraceComplete?: () => void;
 }
 
 interface RouteProgress {
@@ -49,16 +51,19 @@ const vehicleIcons = {
   </svg>`
 };
 
-export function Map({ segments, darkMode = false }: MapProps) {
+export function Map({ segments, darkMode = false, traceRequested = false, onTraceComplete }: MapProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
   const vehicleMarkerRef = useRef<mapboxgl.Marker | null>(null);
   const animationRef = useRef<number | null>(null);
   const [isAnimating, setIsAnimating] = useState(false);
-  const [currentSegment, setCurrentSegment] = useState<number | null>(null);
+  const [currentSegment, setCurrentSegment] = useState<number>(0);
   const [routeProgress, setRouteProgress] = useState<RouteProgress | null>(null);
   const totalProgressRef = useRef({ distance: 0, duration: 0 });
+
+  // Precomputed paths for each segment
+  const [paths, setPaths] = useState<number[][][]>([]);
 
   // Calculate distance between two points in kilometers
   const calculateDistance = (start: [number, number], end: [number, number]): number => {
@@ -169,221 +174,182 @@ export function Map({ segments, darkMode = false }: MapProps) {
     return (bearing + 360) % 360;
   };
 
-  // Animate route drawing with 3D effects
-  const animateRoute = useCallback(async (segmentIndex: number = 0) => {
-    if (!mapRef.current || !segments || segmentIndex >= segments.length) {
-      setIsAnimating(false);
-      setCurrentSegment(null);
-      setRouteProgress(null);
-      if (vehicleMarkerRef.current) {
-        vehicleMarkerRef.current.remove();
-        vehicleMarkerRef.current = null;
+  // Helper: build straight or curved path
+  const buildPath = async (
+    from: [number, number],
+    to: [number, number],
+    mode: string
+  ): Promise<number[][]> => {
+    if (mode === 'flight') {
+      // curved Bézier
+      const pts: number[][] = [];
+      const steps = 200;
+      const midLng = (from[0] + to[0]) / 2;
+      const midLat = (from[1] + to[1]) / 2 + 5; // slight curvature
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const lng = (1 - t) * (1 - t) * from[0] + 2 * (1 - t) * t * midLng + t * t * to[0];
+        const lat = (1 - t) * (1 - t) * from[1] + 2 * (1 - t) * t * midLat + t * t * to[1];
+        pts.push([lng, lat]);
       }
-      return;
-    }
-
-    setIsAnimating(true);
-    setCurrentSegment(segmentIndex);
-    const segment = segments[segmentIndex];
-    
-    // Calculate total distance and duration for this segment
-    const totalDistance = calculateDistance(segment.from.coordinates, segment.to.coordinates);
-    const totalDuration = calculateDuration(totalDistance, segment.mode);
-
-    // Get path coordinates based on transport mode
-    let pathCoords: number[][];
-    if (segment.mode === 'flight') {
-      pathCoords = createCurvedPath(segment.from.coordinates, segment.to.coordinates);
+      return pts;
     } else {
-      pathCoords = await getGroundRoute(segment.from.coordinates, segment.to.coordinates, segment.mode);
+      // fetch real ground route
+      const profile = mode === 'drive' ? 'driving' : mode === 'train' ? 'driving' : 'walking';
+      const res = await fetch(
+        `https://api.mapbox.com/directions/v5/mapbox/${profile}/${from[0]},${from[1]};${to[0]},${to[1]}?geometries=geojson&access_token=${mapboxgl.accessToken}`
+      );
+      const json = await res.json();
+      return json.routes[0].geometry.coordinates;
     }
+  };
 
-    // Remove existing vehicle marker
-    if (vehicleMarkerRef.current) {
-      vehicleMarkerRef.current.remove();
-    }
-
-    // Create new vehicle marker with 3D effect
-    const vehicleEl = createVehicleMarker(segment.mode);
-    vehicleMarkerRef.current = new mapboxgl.Marker({
-      element: vehicleEl,
-      rotationAlignment: 'map',
-      pitchAlignment: 'map'
-    })
-      .setLngLat([pathCoords[0][0], pathCoords[0][1]])
-      .addTo(mapRef.current);
-
-    // Animate vehicle along the path
-    let currentStep = 0;
-    const totalSteps = pathCoords.length - 1;
-    const animationDuration = segment.mode === 'flight' ? 8000 : 5000;
-    const stepDuration = animationDuration / totalSteps;
-
-    const animate = () => {
-      if (currentStep > totalSteps) {
-        // Update total progress
-        totalProgressRef.current.distance += totalDistance;
-        totalProgressRef.current.duration += totalDuration;
-        
-        // Move to next segment after a pause
-        setTimeout(() => animateRoute(segmentIndex + 1), 1000);
+  // The one‐and‐only animateRoute: fetch/build this segment's path,
+  // then incrementally add points to a live line source & move the vehicle.
+  const animateRoute = useCallback(
+    async (segIndex = 0) => {
+      if (!mapRef.current || !segments || segIndex >= segments.length) {
+        setIsAnimating(false);
+        onTraceComplete?.();
         return;
       }
+      setIsAnimating(true);
+      setCurrentSegment(segIndex);
 
-      const progress = currentStep / totalSteps;
-      const currentCoord = pathCoords[Math.floor(currentStep)];
-      const nextCoord = pathCoords[Math.min(Math.floor(currentStep) + 1, totalSteps)];
-      
-      // Calculate bearing and pitch for vehicle rotation
-      const bearing = calculateBearing(
-        [currentCoord[0], currentCoord[1]] as [number, number],
-        [nextCoord[0], nextCoord[1]] as [number, number]
-      );
-      
-      // Add 3D rotation effect
-      const pitch = segment.mode === 'flight' ? -30 : 0;
-      vehicleEl.style.transform = `translate(-50%, -50%) rotate(${bearing}deg) rotateX(${pitch}deg)`;
-      
-      // Update vehicle position
-      vehicleMarkerRef.current?.setLngLat([currentCoord[0], currentCoord[1]]);
-      
-      // Update route progress
-      setRouteProgress({
-        mode: segment.mode,
-        distance: Math.round(totalDistance * progress),
-        duration: Math.round(totalDuration * progress),
-        progress: progress * 100,
-        from: segment.from.name,
-        to: segment.to.name
-      });
-      
-      // Smooth camera movement with easing and 3D perspective
-      mapRef.current!.easeTo({
-        center: [currentCoord[0], currentCoord[1]] as [number, number],
-        zoom: segment.mode === 'flight' ? 4 : 8,
-        bearing: 0,
-        pitch: segment.mode === 'flight' ? 60 : 45,
-        duration: stepDuration,
-        easing: (t) => t * (2 - t),
-      });
+      const seg = segments[segIndex];
+      const path = await buildPath(seg.from.coordinates, seg.to.coordinates, seg.mode);
 
-      currentStep += 0.5;
-      animationRef.current = requestAnimationFrame(animate);
-    };
-
-    // Start with a view of the segment
-    const bounds = new mapboxgl.LngLatBounds()
-      .extend(segment.from.coordinates)
-      .extend(segment.to.coordinates);
-    
-    mapRef.current.fitBounds(bounds, {
-      padding: 100,
-      duration: 1500,
-      pitch: segment.mode === 'flight' ? 60 : 45,
-    });
-
-    // Start animation after initial view
-    setTimeout(() => {
-      animate();
-    }, 1800);
-  }, [segments]);
-
-  // Draw all segments at once (no animation)
-  const drawAllSegments = useCallback(() => {
-    if (!mapRef.current || !segments || segments.length === 0) return;
-
-    // Clear existing routes
-    segments.forEach((_, index) => {
-      const sourceId = `route-${index}`;
-      if (mapRef.current!.getLayer(sourceId)) {
-        mapRef.current!.removeLayer(sourceId);
+      // Create or reset the GeoJSON source for this segment
+      const srcId = `live-route`;
+      if (mapRef.current.getSource(srcId)) {
+        mapRef.current.removeLayer(srcId);
+        mapRef.current.removeSource(srcId);
       }
-      if (mapRef.current!.getSource(sourceId)) {
-        mapRef.current!.removeSource(sourceId);
-      }
-    });
-
-    // Draw all segments
-    segments.forEach((segment, index) => {
-      const isFlight = segment.mode === 'flight';
-      const pathCoords = isFlight 
-        ? createCurvedPath(segment.from.coordinates, segment.to.coordinates)
-        : [segment.from.coordinates, segment.to.coordinates];
-
-      mapRef.current!.addSource(`route-${index}`, {
+      mapRef.current.addSource(srcId, {
         type: 'geojson',
         data: {
           type: 'Feature',
           properties: {},
-          geometry: {
-            type: 'LineString',
-            coordinates: pathCoords,
-          },
+          geometry: { type: 'LineString', coordinates: [] },
         },
       });
-
-      mapRef.current!.addLayer({
-        id: `route-${index}`,
+      mapRef.current.addLayer({
+        id: srcId,
         type: 'line',
-        source: `route-${index}`,
-        layout: {
-          'line-join': 'round',
-          'line-cap': 'round',
-        },
+        source: srcId,
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: {
-          'line-color': segment.mode === 'flight' ? '#3b82f6' : 
-                        segment.mode === 'drive' ? '#10b981' :
-                        segment.mode === 'train' ? '#f59e0b' : '#8b5cf6',
-          'line-width': 3,
-          'line-dasharray': segment.mode === 'flight' ? [0, 4, 3] : [1, 0],
+          'line-color':
+            seg.mode === 'flight'
+              ? '#3b82f6'
+              : seg.mode === 'drive'
+              ? '#10b981'
+              : seg.mode === 'train'
+              ? '#f59e0b'
+              : '#8b5cf6',
+          'line-width': 4,
         },
       });
-    });
 
-    // Fit to show all routes
-    const bounds = new mapboxgl.LngLatBounds();
-    segments.forEach(segment => {
-      bounds.extend(segment.from.coordinates);
-      bounds.extend(segment.to.coordinates);
-    });
-    mapRef.current.fitBounds(bounds, { padding: 100 });
-  }, [segments]);
+      // Place the vehicle marker
+      if (vehicleMarkerRef.current) vehicleMarkerRef.current.remove();
+      const el = document.createElement('div');
+      el.innerHTML = vehicleIcons[seg.mode];
+      el.style.width = '32px';
+      el.style.height = '32px';
+      if (Array.isArray(path[0]) && path[0].length === 2) {
+        const marker = new mapboxgl.Marker({ element: el, rotationAlignment: 'map' })
+          .setLngLat([path[0][0], path[0][1]])
+          .addTo(mapRef.current);
+        vehicleMarkerRef.current = marker;
+      }
 
+      // Animate: gradually extend the line and move the marker
+      let step = 0;
+      const total = path.length;
+      const animateStep = () => {
+        if (step >= total) {
+          // pause, then next segment
+          setTimeout(() => animateRoute(segIndex + 1), 500);
+          return;
+        }
+        const coordsSoFar = path.slice(0, step + 1);
+        const src = mapRef.current!.getSource(srcId) as mapboxgl.GeoJSONSource;
+        src.setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: coordsSoFar } });
+        if (vehicleMarkerRef.current && Array.isArray(path[step]) && path[step].length === 2) {
+          vehicleMarkerRef.current.setLngLat([path[step][0], path[step][1]]);
+        }
+        step++;
+        animationRef.current = requestAnimationFrame(animateStep);
+      };
+
+      // Fit camera to full segment
+      const bounds = new mapboxgl.LngLatBounds();
+      path.forEach((pt) => {
+        if (Array.isArray(pt) && pt.length === 2) bounds.extend([pt[0], pt[1]]);
+      });
+      if (path.length > 0) {
+        mapRef.current.fitBounds(bounds, { padding: 50, duration: 1000, pitch: seg.mode === 'flight' ? 60 : 45 });
+      }
+
+      // kick off
+      animationRef.current = requestAnimationFrame(animateStep);
+    },
+    [segments, onTraceComplete]
+  );
+
+  // On traceRequested → start at segment 0
+  useEffect(() => {
+    if (traceRequested) {
+      animateRoute(0);
+    }
+  }, [traceRequested, animateRoute]);
+
+  // Map init (unchanged, but keep 3D, terrain, fog, etc.)
   useEffect(() => {
     if (!mapContainer.current) return;
-
     const map = new mapboxgl.Map({
       container: mapContainer.current,
       style: darkMode ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11',
       center: [0, 20],
       zoom: 2,
-      pitch: 45, // Add 3D perspective
+      pitch: 45,
       bearing: 0,
       antialias: true,
     });
-
     mapRef.current = map;
-
     map.on('load', () => {
-      console.log('Map loaded successfully');
-      
-      // Enable 3D terrain
+      // 1. 3D Terrain DEM
       map.addSource('mapbox-dem', {
         type: 'raster-dem',
         url: 'mapbox://mapbox.mapbox-terrain-dem-v1',
         tileSize: 512,
         maxzoom: 14
       });
-      
       map.setTerrain({ source: 'mapbox-dem', exaggeration: 1.5 });
 
-      // Add atmosphere effect
+      // 2. Sky & Fog
       map.setFog({
-        color: darkMode ? 'rgb(17, 24, 39)' : 'rgb(243, 244, 246)',
-        'high-color': darkMode ? 'rgb(17, 24, 39)' : 'rgb(243, 244, 246)',
-        'horizon-blend': 0.02,
-        'space-color': darkMode ? 'rgb(17, 24, 39)' : 'rgb(243, 244, 246)',
-        'star-intensity': 0.6
+        'horizon-blend': 0.1,
+        color: darkMode ? 'rgb(17,24,39)' : 'rgb(243,244,246)',
+        'space-color': darkMode ? 'rgb(10,10,25)' : 'rgb(255,255,255)',
+        'star-intensity': 0.3
+      });
+
+      // 3. 3D Buildings
+      map.addLayer({
+        id: '3d-buildings',
+        source: 'composite',
+        'source-layer': 'building',
+        filter: ['==', 'extrude', 'true'],
+        type: 'fill-extrusion',
+        minzoom: 15,
+        paint: {
+          'fill-extrusion-color': darkMode ? '#444' : '#aaa',
+          'fill-extrusion-height': ['get', 'height'],
+          'fill-extrusion-base': ['get', 'min_height'],
+          'fill-extrusion-opacity': 0.6
+        }
       });
 
       // Add markers and draw routes when segments change
@@ -391,14 +357,87 @@ export function Map({ segments, darkMode = false }: MapProps) {
         updateMapWithSegments();
       }
     });
-
     return () => {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current);
-      }
+      if (animationRef.current) cancelAnimationFrame(animationRef.current);
       map.remove();
     };
   }, [darkMode]);
+
+  // Build actual coordinate arrays (curved for flight, fetched for ground)
+  useEffect(() => {
+    if (!segments) {
+      setPaths([]);
+      return;
+    }
+    Promise.all(
+      segments.map(async (seg) => {
+        if (seg.mode === 'flight') {
+          return createCurvedPath(seg.from.coordinates, seg.to.coordinates);
+        } else {
+          const profile = seg.mode === 'drive' ? 'driving' : seg.mode;
+          try {
+            const res = await fetch(
+              `https://api.mapbox.com/directions/v5/mapbox/${profile}/${seg.from.coordinates.join(',')};${seg.to.coordinates.join(',')}?geometries=geojson&access_token=${mapboxgl.accessToken}`
+            );
+            const data = await res.json();
+            return data.routes[0].geometry.coordinates;
+          } catch {
+            return [seg.from.coordinates, seg.to.coordinates];
+          }
+        }
+      })
+    ).then(setPaths);
+  }, [segments]);
+
+  // Modified drawAllSegments to use `paths`
+  const drawAllSegments = useCallback(() => {
+    if (!mapRef.current || !segments || segments.length === 0 || paths.length < segments.length) return;
+
+    // clear old layers
+    segments.forEach((_, i) => {
+      const id = `route-${i}`;
+      if (mapRef.current!.getLayer(id)) mapRef.current!.removeLayer(id);
+      if (mapRef.current!.getSource(id)) mapRef.current!.removeSource(id);
+    });
+
+    // draw using precomputed paths
+    segments.forEach((segment, i) => {
+      const coords = paths[i];
+      mapRef.current!.addSource(`route-${i}`, {
+        type: 'geojson',
+        data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: coords } },
+      });
+      mapRef.current!.addLayer({
+        id: `route-${i}`,
+        type: 'line',
+        source: `route-${i}`,
+        layout: { 'line-join': 'round','line-cap': 'round' },
+        paint: {
+          'line-color':
+            segment.mode === 'flight' ? '#3b82f6' :
+            segment.mode === 'drive' ? '#10b981' :
+            segment.mode === 'train' ? '#f59e0b' : '#8b5cf6',
+          'line-width': 3,
+          //'line-dasharray': segment.mode === 'flight' ? [0,4,3] : [1,0],
+        },
+      });
+    });
+
+    // fit all
+    const bounds = new mapboxgl.LngLatBounds();
+    segments.forEach(s => {
+      bounds.extend(s.from.coordinates);
+      bounds.extend(s.to.coordinates);
+    });
+    mapRef.current!.fitBounds(bounds, { padding: 100 });
+  }, [segments, paths]);
+
+  // Notify page when animation fully completes
+  useEffect(() => {
+    if (!isAnimating && !currentSegment && traceRequested) {
+      onTraceComplete?.();
+    }
+  }, [isAnimating, currentSegment, traceRequested, onTraceComplete]);
 
   // Update map when segments change
   const updateMapWithSegments = useCallback(() => {
