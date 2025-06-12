@@ -1,3 +1,5 @@
+// File: apps/frontend/src/components/Map/Map.tsx
+
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
@@ -14,7 +16,6 @@ interface Location {
 }
 
 interface MapProps {
-  onRouteChange?: (waypoints: Array<{ lat: number; lng: number; name?: string }>) => void;
   segments?: Array<{
     from: Location;
     to: Location;
@@ -23,248 +24,332 @@ interface MapProps {
   darkMode?: boolean;
 }
 
-export function Map({ onRouteChange, segments, darkMode = false }: MapProps) {
+export function Map({ segments, darkMode = false }: MapProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
-  const [waypoints, setWaypoints] = useState<Array<{ lat: number; lng: number; name?: string }>>([]);
-  const [mapStatus, setMapStatus] = useState('Initializing...');
+  const animationRef = useRef<number | null>(null);
+  const [isAnimating, setIsAnimating] = useState(false);
 
-  // Draw route from segments
-  const drawSegmentRoute = useCallback(() => {
-    if (!mapRef.current || !segments || segments.length === 0) return;
+  // Create curved path for flights
+  const createCurvedPath = (start: [number, number], end: [number, number]): number[][] => {
+    const points: number[][] = [];
+    const steps = 100;
+    
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      
+      // Calculate control point for bezier curve
+      const midLng = (start[0] + end[0]) / 2;
+      const midLat = (start[1] + end[1]) / 2;
+      
+      // Add curvature based on distance
+      const distance = Math.sqrt(
+        Math.pow(end[0] - start[0], 2) + Math.pow(end[1] - start[1], 2)
+      );
+      const curvature = Math.min(distance * 0.15, 15);
+      
+      const controlLat = midLat + curvature;
+      
+      // Quadratic bezier curve
+      const lng = Math.pow(1 - t, 2) * start[0] + 
+                  2 * (1 - t) * t * midLng + 
+                  Math.pow(t, 2) * end[0];
+      
+      const lat = Math.pow(1 - t, 2) * start[1] + 
+                  2 * (1 - t) * t * controlLat + 
+                  Math.pow(t, 2) * end[1];
+      
+      points.push([lng, lat]);
+    }
+    
+    return points;
+  };
 
-    if (!mapRef.current.isStyleLoaded()) {
-      mapRef.current.once('load', () => {
-        drawSegmentRoute();
-      });
+  // Animate route drawing
+  const animateRoute = useCallback((segmentIndex: number = 0) => {
+    if (!mapRef.current || !segments || segmentIndex >= segments.length) {
+      setIsAnimating(false);
       return;
     }
 
-    // Clear existing routes
-    try {
-      if (mapRef.current.getSource('route')) {
-        mapRef.current.removeLayer('route');
-        mapRef.current.removeSource('route');
-      }
-    } catch (e) {
-      // Source doesn't exist yet
+    setIsAnimating(true);
+    const segment = segments[segmentIndex];
+    const isFlight = segment.mode === 'flight';
+    
+    // Get path coordinates
+    const pathCoords = isFlight 
+      ? createCurvedPath(segment.from.coordinates, segment.to.coordinates)
+      : [segment.from.coordinates, segment.to.coordinates];
+
+    // Create a GeoJSON LineString
+    const routeGeoJson: GeoJSON.Feature<GeoJSON.LineString> = {
+      type: 'Feature',
+      properties: {},
+      geometry: {
+        type: 'LineString',
+        coordinates: pathCoords,
+      },
+    };
+
+    // Add or update the route source
+    const sourceId = `route-${segmentIndex}`;
+    if (mapRef.current.getSource(sourceId)) {
+      (mapRef.current.getSource(sourceId) as mapboxgl.GeoJSONSource).setData(routeGeoJson);
+    } else {
+      mapRef.current.addSource(sourceId, {
+        type: 'geojson',
+        data: routeGeoJson,
+      });
+
+      mapRef.current.addLayer({
+        id: sourceId,
+        type: 'line',
+        source: sourceId,
+        layout: {
+          'line-join': 'round',
+          'line-cap': 'round',
+        },
+        paint: {
+          'line-color': segment.mode === 'flight' ? '#3b82f6' : '#10b981',
+          'line-width': 3,
+          'line-dasharray': segment.mode === 'flight' ? [0, 4, 3] : [1, 0],
+        },
+      });
     }
 
-    // Get all coordinates
-    const coordinates: [number, number][] = [];
-    segments.forEach((segment, index) => {
-      if (index === 0) {
-        coordinates.push(segment.from.coordinates);
+    // Animate camera along the path
+    let currentStep = 0;
+    const totalSteps = pathCoords.length - 1;
+    const animationDuration = 3000; // 3 seconds per segment
+    const stepDuration = animationDuration / totalSteps;
+
+    const animate = () => {
+      if (currentStep > totalSteps) {
+        // Move to next segment
+        setTimeout(() => animateRoute(segmentIndex + 1), 500);
+        return;
       }
-      coordinates.push(segment.to.coordinates);
+
+      const currentCoord = pathCoords[Math.floor(currentStep)];
+      
+      // Smooth camera movement
+      mapRef.current!.easeTo({
+        center: currentCoord as [number, number],
+        zoom: segment.mode === 'flight' ? 5 : 10,
+        bearing: 0,
+        duration: stepDuration,
+        easing: (t) => t,
+      });
+
+      currentStep += 1;
+      animationRef.current = requestAnimationFrame(animate);
+    };
+
+    // Start with a view of the segment
+    const bounds = new mapboxgl.LngLatBounds()
+      .extend(segment.from.coordinates)
+      .extend(segment.to.coordinates);
+    
+    mapRef.current.fitBounds(bounds, {
+      padding: 100,
+      duration: 1000,
     });
 
-    // Add route
-    mapRef.current.addSource('route', {
-      type: 'geojson',
-      data: {
-        type: 'Feature',
-        properties: {},
-        geometry: {
-          type: 'LineString',
-          coordinates: coordinates,
-        },
-      },
-    });
-
-    mapRef.current.addLayer({
-      id: 'route',
-      type: 'line',
-      source: 'route',
-      layout: {
-        'line-join': 'round',
-        'line-cap': 'round',
-      },
-      paint: {
-        'line-color': '#3b82f6',
-        'line-width': 4,
-      },
-    });
-
-    // Fit bounds
-    const bounds = new mapboxgl.LngLatBounds();
-    coordinates.forEach(coord => bounds.extend(coord));
-    mapRef.current.fitBounds(bounds, { padding: 100 });
+    // Start animation after initial view
+    setTimeout(() => {
+      animate();
+    }, 1200);
   }, [segments]);
 
-  // Draw route from waypoints (existing functionality)
-  const drawRoute = useCallback((points: Array<{ lat: number; lng: number }>) => {
-    if (!mapRef.current || points.length < 2) return;
+  // Draw all segments at once (no animation)
+  const drawAllSegments = useCallback(() => {
+    if (!mapRef.current || !segments || segments.length === 0) return;
 
-    if (!mapRef.current.isStyleLoaded()) {
-      mapRef.current.once('load', () => {
-        drawRoute(points);
-      });
-      return;
-    }
-
-    const coordinates = points.map(p => [p.lng, p.lat]);
-
-    try {
-      if (mapRef.current.getSource('route')) {
-        mapRef.current.removeLayer('route');
-        mapRef.current.removeSource('route');
+    // Clear existing routes
+    segments.forEach((_, index) => {
+      const sourceId = `route-${index}`;
+      if (mapRef.current!.getLayer(sourceId)) {
+        mapRef.current!.removeLayer(sourceId);
       }
-    } catch (e) {
-      // Source doesn't exist yet
-    }
+      if (mapRef.current!.getSource(sourceId)) {
+        mapRef.current!.removeSource(sourceId);
+      }
+    });
 
-    mapRef.current.addSource('route', {
-      type: 'geojson',
-      data: {
-        type: 'Feature',
-        properties: {},
-        geometry: {
-          type: 'LineString',
-          coordinates: coordinates,
+    // Draw all segments
+    segments.forEach((segment, index) => {
+      const isFlight = segment.mode === 'flight';
+      const pathCoords = isFlight 
+        ? createCurvedPath(segment.from.coordinates, segment.to.coordinates)
+        : [segment.from.coordinates, segment.to.coordinates];
+
+      mapRef.current!.addSource(`route-${index}`, {
+        type: 'geojson',
+        data: {
+          type: 'Feature',
+          properties: {},
+          geometry: {
+            type: 'LineString',
+            coordinates: pathCoords,
+          },
         },
-      },
+      });
+
+      mapRef.current!.addLayer({
+        id: `route-${index}`,
+        type: 'line',
+        source: `route-${index}`,
+        layout: {
+          'line-join': 'round',
+          'line-cap': 'round',
+        },
+        paint: {
+          'line-color': segment.mode === 'flight' ? '#3b82f6' : 
+                        segment.mode === 'drive' ? '#10b981' :
+                        segment.mode === 'train' ? '#f59e0b' : '#8b5cf6',
+          'line-width': 3,
+          'line-dasharray': segment.mode === 'flight' ? [0, 4, 3] : [1, 0],
+        },
+      });
     });
 
-    mapRef.current.addLayer({
-      id: 'route',
-      type: 'line',
-      source: 'route',
-      layout: {
-        'line-join': 'round',
-        'line-cap': 'round',
-      },
-      paint: {
-        'line-color': '#3b82f6',
-        'line-width': 4,
-      },
+    // Fit to show all routes
+    const bounds = new mapboxgl.LngLatBounds();
+    segments.forEach(segment => {
+      bounds.extend(segment.from.coordinates);
+      bounds.extend(segment.to.coordinates);
     });
-  }, []);
+    mapRef.current.fitBounds(bounds, { padding: 100 });
+  }, [segments]);
 
   useEffect(() => {
     if (!mapContainer.current) return;
 
     const map = new mapboxgl.Map({
       container: mapContainer.current,
-      style: darkMode ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/streets-v12',
-      center: segments && segments.length > 0 ? segments[0].from.coordinates : [-122.4194, 37.7749],
-      zoom: segments && segments.length > 0 ? 4 : 12,
+      style: darkMode ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11',
+      center: [0, 20],
+      zoom: 2,
     });
 
     mapRef.current = map;
 
     map.on('load', () => {
-      setMapStatus('Ready - Click to add waypoints');
       console.log('Map loaded successfully');
       
-      // Draw segments if provided
+      // Add markers and draw routes when segments change
       if (segments && segments.length > 0) {
-        drawSegmentRoute();
+        updateMapWithSegments();
       }
-    });
-
-    // Only allow clicking if not in segment mode
-    if (!segments) {
-      map.on('click', (e) => {
-        const { lng, lat } = e.lngLat;
-        
-        const marker = new mapboxgl.Marker()
-          .setLngLat([lng, lat])
-          .addTo(map);
-        
-        markersRef.current.push(marker);
-        
-        setWaypoints(prev => {
-          const updated = [...prev, { lat, lng }];
-          onRouteChange?.(updated);
-          
-          if (updated.length >= 2) {
-            drawRoute(updated);
-          }
-          
-          return updated;
-        });
-      });
-    }
-
-    map.on('error', (e) => {
-      setMapStatus(`Error: ${e.error.message}`);
-      console.error('Map error:', e);
     });
 
     return () => {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
       map.remove();
     };
-  }, [darkMode, segments, drawSegmentRoute, drawRoute, onRouteChange]);
+  }, [darkMode]);
 
   // Update map when segments change
-  useEffect(() => {
-    if (mapRef.current && segments) {
-      // Clear existing markers
-      markersRef.current.forEach(marker => marker.remove());
-      markersRef.current = [];
+  const updateMapWithSegments = useCallback(() => {
+    if (!mapRef.current || !segments) return;
 
-      // Add markers for segment locations
-      segments.forEach((segment) => {
-        const fromMarker = new mapboxgl.Marker({ color: '#10b981' })
-          .setLngLat(segment.from.coordinates)
-          .setPopup(new mapboxgl.Popup().setHTML(`<p>${segment.from.name}</p>`))
-          .addTo(mapRef.current!);
-        
-        const toMarker = new mapboxgl.Marker({ color: '#ef4444' })
-          .setLngLat(segment.to.coordinates)
-          .setPopup(new mapboxgl.Popup().setHTML(`<p>${segment.to.name}</p>`))
-          .addTo(mapRef.current!);
-        
-        markersRef.current.push(fromMarker, toMarker);
-      });
-
-      drawSegmentRoute();
+    // Wait for map to be loaded
+    if (!mapRef.current.isStyleLoaded()) {
+      mapRef.current.once('load', updateMapWithSegments);
+      return;
     }
-  }, [segments, drawSegmentRoute]);
 
-  const clearRoute = () => {
+    // Clear existing markers
     markersRef.current.forEach(marker => marker.remove());
     markersRef.current = [];
-    
-    setWaypoints([]);
-    onRouteChange?.([]);
-    
-    if (mapRef.current) {
-      try {
-        if (mapRef.current.getSource('route')) {
-          mapRef.current.removeLayer('route');
-          mapRef.current.removeSource('route');
-        }
-      } catch (e) {
-        console.log('No route to clear');
-      }
-    }
-  };
 
-  // Don't show controls if in segment mode
-  if (segments) {
-    return <div ref={mapContainer} className="h-full w-full" />;
-  }
+    // Add markers for all locations
+    const allLocations: Location[] = [];
+    segments.forEach((segment, index) => {
+      if (index === 0 || !allLocations.find(loc => loc.id === segment.from.id)) {
+        allLocations.push(segment.from);
+      }
+      if (!allLocations.find(loc => loc.id === segment.to.id)) {
+        allLocations.push(segment.to);
+      }
+    });
+
+    allLocations.forEach((location, index) => {
+      const isStart = index === 0;
+      const isEnd = index === allLocations.length - 1;
+      
+      const el = document.createElement('div');
+      el.className = 'marker';
+      el.style.width = '12px';
+      el.style.height = '12px';
+      el.style.borderRadius = '50%';
+      el.style.backgroundColor = isStart ? '#10b981' : isEnd ? '#ef4444' : '#3b82f6';
+      el.style.border = '2px solid white';
+      el.style.boxShadow = '0 2px 4px rgba(0,0,0,0.3)';
+      
+      const marker = new mapboxgl.Marker(el)
+        .setLngLat(location.coordinates)
+        .setPopup(new mapboxgl.Popup({ offset: 25 }).setHTML(
+          `<div class="font-medium">${location.name}</div>`
+        ))
+        .addTo(mapRef.current!);
+      
+      markersRef.current.push(marker);
+    });
+
+    // Draw all routes
+    drawAllSegments();
+  }, [segments, drawAllSegments]);
+
+  useEffect(() => {
+    updateMapWithSegments();
+  }, [segments, updateMapWithSegments]);
+
+  // Add animation button
+  useEffect(() => {
+    if (!mapRef.current || !segments || segments.length === 0) return;
+
+    const button = document.createElement('button');
+    button.innerHTML = '▶ Play Route Animation';
+    button.className = `absolute bottom-8 left-1/2 transform -translate-x-1/2 px-4 py-2 rounded-lg font-medium text-sm transition-colors ${
+      darkMode 
+        ? 'bg-gray-800 text-white hover:bg-gray-700' 
+        : 'bg-white text-gray-900 hover:bg-gray-100'
+    } shadow-lg`;
+    button.onclick = () => {
+      if (!isAnimating) {
+        // Clear existing routes first
+        segments.forEach((_, index) => {
+          const sourceId = `route-${index}`;
+          if (mapRef.current?.getSource(sourceId)) {
+            mapRef.current.removeSource(sourceId);
+          }
+        });
+
+        // Start animation
+        setIsAnimating(true);
+        animateRoute();
+      } else {
+        // Stop animation
+        setIsAnimating(false);
+        button.innerHTML = '▶ Play Route Animation';
+      }
+    };
+
+    const container = mapRef.current.getContainer();
+    container.appendChild(button);
+
+    return () => {
+      container.removeChild(button);
+    };
+  }, [segments, darkMode, isAnimating, animateRoute]);
 
   return (
     <div className="relative h-full w-full">
       <div ref={mapContainer} className="h-full w-full" />
-      
-      <div className="absolute top-4 left-4 bg-white p-4 rounded-lg shadow-md">
-        <h3 className="font-semibold mb-2">Route Builder</h3>
-        <p className="text-sm text-gray-600 mb-3">{mapStatus}</p>
-        <p className="text-sm mb-3">Waypoints: {waypoints.length}</p>
-        {waypoints.length > 0 && (
-          <button
-            onClick={clearRoute}
-            className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600"
-          >
-            Clear Route
-          </button>
-        )}
-      </div>
     </div>
   );
 }
