@@ -33,10 +33,27 @@ interface RouteProgress {
   to: string;
 }
 
+// Vehicle icons as SVG strings
+const vehicleIcons = {
+  flight: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <path d="M2 22l20-20M2 2l20 20M12 2l0 20M2 12l20 0"/>
+  </svg>`,
+  drive: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <path d="M3 17h18M3 17a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h18a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2M3 17v-4m18 4v-4M7 17v-4m10 4v-4M7 17h10"/>
+  </svg>`,
+  train: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <path d="M4 15h16M4 15a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2M4 15v4m16-4v4M8 15v4m8-4v4"/>
+  </svg>`,
+  walk: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <path d="M12 4a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 16a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm-8-8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm16 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/>
+  </svg>`
+};
+
 export function Map({ segments, darkMode = false }: MapProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
+  const vehicleMarkerRef = useRef<mapboxgl.Marker | null>(null);
   const animationRef = useRef<number | null>(null);
   const [isAnimating, setIsAnimating] = useState(false);
   const [currentSegment, setCurrentSegment] = useState<number | null>(null);
@@ -120,12 +137,48 @@ export function Map({ segments, darkMode = false }: MapProps) {
     }
   };
 
-  // Animate route drawing
+  // Create vehicle marker element with 3D effect
+  const createVehicleMarker = (mode: string) => {
+    const el = document.createElement('div');
+    el.className = 'vehicle-marker';
+    el.innerHTML = vehicleIcons[mode as keyof typeof vehicleIcons];
+    el.style.width = '32px';
+    el.style.height = '32px';
+    el.style.color = mode === 'flight' ? '#3b82f6' : 
+                     mode === 'drive' ? '#10b981' :
+                     mode === 'train' ? '#f59e0b' : '#8b5cf6';
+    el.style.transform = 'translate(-50%, -50%)';
+    el.style.transition = 'transform 0.1s ease-out';
+    el.style.filter = 'drop-shadow(0 4px 6px rgba(0,0,0,0.3))';
+    el.style.perspective = '1000px';
+    el.style.transformStyle = 'preserve-3d';
+    return el;
+  };
+
+  // Calculate bearing between two points
+  const calculateBearing = (start: [number, number], end: [number, number]): number => {
+    const startLng = start[0] * Math.PI / 180;
+    const startLat = start[1] * Math.PI / 180;
+    const endLng = end[0] * Math.PI / 180;
+    const endLat = end[1] * Math.PI / 180;
+
+    const y = Math.sin(endLng - startLng) * Math.cos(endLat);
+    const x = Math.cos(startLat) * Math.sin(endLat) -
+              Math.sin(startLat) * Math.cos(endLat) * Math.cos(endLng - startLng);
+    let bearing = Math.atan2(y, x) * 180 / Math.PI;
+    return (bearing + 360) % 360;
+  };
+
+  // Animate route drawing with 3D effects
   const animateRoute = useCallback(async (segmentIndex: number = 0) => {
     if (!mapRef.current || !segments || segmentIndex >= segments.length) {
       setIsAnimating(false);
       setCurrentSegment(null);
       setRouteProgress(null);
+      if (vehicleMarkerRef.current) {
+        vehicleMarkerRef.current.remove();
+        vehicleMarkerRef.current = null;
+      }
       return;
     }
 
@@ -145,45 +198,22 @@ export function Map({ segments, darkMode = false }: MapProps) {
       pathCoords = await getGroundRoute(segment.from.coordinates, segment.to.coordinates, segment.mode);
     }
 
-    // Create a GeoJSON LineString
-    const routeGeoJson: GeoJSON.Feature<GeoJSON.LineString> = {
-      type: 'Feature',
-      properties: {},
-      geometry: {
-        type: 'LineString',
-        coordinates: pathCoords,
-      },
-    };
-
-    // Add or update the route source
-    const sourceId = `route-${segmentIndex}`;
-    if (mapRef.current.getSource(sourceId)) {
-      (mapRef.current.getSource(sourceId) as mapboxgl.GeoJSONSource).setData(routeGeoJson);
-    } else {
-      mapRef.current.addSource(sourceId, {
-        type: 'geojson',
-        data: routeGeoJson,
-      });
-
-      mapRef.current.addLayer({
-        id: sourceId,
-        type: 'line',
-        source: sourceId,
-        layout: {
-          'line-join': 'round',
-          'line-cap': 'round',
-        },
-        paint: {
-          'line-color': segment.mode === 'flight' ? '#3b82f6' : 
-                        segment.mode === 'drive' ? '#10b981' :
-                        segment.mode === 'train' ? '#f59e0b' : '#8b5cf6',
-          'line-width': 3,
-          'line-dasharray': segment.mode === 'flight' ? [0, 4, 3] : [1, 0],
-        },
-      });
+    // Remove existing vehicle marker
+    if (vehicleMarkerRef.current) {
+      vehicleMarkerRef.current.remove();
     }
 
-    // Animate camera along the path
+    // Create new vehicle marker with 3D effect
+    const vehicleEl = createVehicleMarker(segment.mode);
+    vehicleMarkerRef.current = new mapboxgl.Marker({
+      element: vehicleEl,
+      rotationAlignment: 'map',
+      pitchAlignment: 'map'
+    })
+      .setLngLat([pathCoords[0][0], pathCoords[0][1]])
+      .addTo(mapRef.current);
+
+    // Animate vehicle along the path
     let currentStep = 0;
     const totalSteps = pathCoords.length - 1;
     const animationDuration = segment.mode === 'flight' ? 8000 : 5000;
@@ -202,6 +232,20 @@ export function Map({ segments, darkMode = false }: MapProps) {
 
       const progress = currentStep / totalSteps;
       const currentCoord = pathCoords[Math.floor(currentStep)];
+      const nextCoord = pathCoords[Math.min(Math.floor(currentStep) + 1, totalSteps)];
+      
+      // Calculate bearing and pitch for vehicle rotation
+      const bearing = calculateBearing(
+        [currentCoord[0], currentCoord[1]] as [number, number],
+        [nextCoord[0], nextCoord[1]] as [number, number]
+      );
+      
+      // Add 3D rotation effect
+      const pitch = segment.mode === 'flight' ? -30 : 0;
+      vehicleEl.style.transform = `translate(-50%, -50%) rotate(${bearing}deg) rotateX(${pitch}deg)`;
+      
+      // Update vehicle position
+      vehicleMarkerRef.current?.setLngLat([currentCoord[0], currentCoord[1]]);
       
       // Update route progress
       setRouteProgress({
@@ -213,11 +257,12 @@ export function Map({ segments, darkMode = false }: MapProps) {
         to: segment.to.name
       });
       
-      // Smooth camera movement with easing
+      // Smooth camera movement with easing and 3D perspective
       mapRef.current!.easeTo({
-        center: currentCoord as [number, number],
+        center: [currentCoord[0], currentCoord[1]] as [number, number],
         zoom: segment.mode === 'flight' ? 4 : 8,
         bearing: 0,
+        pitch: segment.mode === 'flight' ? 60 : 45,
         duration: stepDuration,
         easing: (t) => t * (2 - t),
       });
@@ -234,6 +279,7 @@ export function Map({ segments, darkMode = false }: MapProps) {
     mapRef.current.fitBounds(bounds, {
       padding: 100,
       duration: 1500,
+      pitch: segment.mode === 'flight' ? 60 : 45,
     });
 
     // Start animation after initial view
@@ -311,6 +357,9 @@ export function Map({ segments, darkMode = false }: MapProps) {
       style: darkMode ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11',
       center: [0, 20],
       zoom: 2,
+      pitch: 45, // Add 3D perspective
+      bearing: 0,
+      antialias: true,
     });
 
     mapRef.current = map;
@@ -318,6 +367,25 @@ export function Map({ segments, darkMode = false }: MapProps) {
     map.on('load', () => {
       console.log('Map loaded successfully');
       
+      // Enable 3D terrain
+      map.addSource('mapbox-dem', {
+        type: 'raster-dem',
+        url: 'mapbox://mapbox.mapbox-terrain-dem-v1',
+        tileSize: 512,
+        maxzoom: 14
+      });
+      
+      map.setTerrain({ source: 'mapbox-dem', exaggeration: 1.5 });
+
+      // Add atmosphere effect
+      map.setFog({
+        color: darkMode ? 'rgb(17, 24, 39)' : 'rgb(243, 244, 246)',
+        'high-color': darkMode ? 'rgb(17, 24, 39)' : 'rgb(243, 244, 246)',
+        'horizon-blend': 0.02,
+        'space-color': darkMode ? 'rgb(17, 24, 39)' : 'rgb(243, 244, 246)',
+        'star-intensity': 0.6
+      });
+
       // Add markers and draw routes when segments change
       if (segments && segments.length > 0) {
         updateMapWithSegments();
