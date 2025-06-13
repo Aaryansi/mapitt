@@ -1,0 +1,91 @@
+// apps/frontend/src/components/Landing/HowItWorks.module.scss
+.howItWorksSection {
+    padding: 4rem 2rem;
+    position: relative;
+    z-index: 1;
+    max-width: 800px;
+    margin: 0 auto;
+  }
+  
+  .sectionTitle {
+    font-size: 2.5rem;
+    font-weight: 700;
+    color: #ffffff;
+    text-align: center;
+    margin-bottom: 3rem;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  }
+  
+  .stepsContainer {
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+  }
+  
+  .stepCard {
+    display: flex;
+    align-items: center;
+    gap: 2rem;
+    position: relative;
+    
+    @media (max-width: 768px) {
+      gap: 1rem;
+    }
+  }
+  
+  .stepNumber {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #a78bfa;
+    background: rgba(167, 139, 250, 0.1);
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    border: 2px solid rgba(167, 139, 250, 0.3);
+  }
+  
+  .stepContent {
+    flex: 1;
+    background: rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-radius: 16px;
+    padding: 1.5rem;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+  }
+  
+  .stepIcon {
+    color: #a78bfa;
+    margin-bottom: 0.75rem;
+  }
+  
+  .stepTitle {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: #ffffff;
+    margin-bottom: 0.5rem;
+  }
+  
+  .stepDescription {
+    font-size: 0.95rem;
+    color: rgba(255, 255, 255, 0.7);
+    line-height: 1.6;
+  }
+  
+  .stepConnector {
+    position: absolute;
+    left: 29px;
+    top: 70px;
+    width: 2px;
+    height: calc(100% + 1rem);
+    background: linear-gradient(180deg, rgba(167, 139, 250, 0.3) 0%, transparent 100%);
+    
+    @media (max-width: 768px) {
+      left: 29px;
+    }
+  }

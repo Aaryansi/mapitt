@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
-import '@/styles/globals.css';
-import { TrpcProvider } from '@/components/providers/TrpcProvider';
+import '../styles/globals.css';  // <-- adjust path if you keep your globals.css elsewhere
+// import { TrpcProvider } from '@/components/providers/TrpcProvider';
 
 export const metadata: Metadata = {
   title: 'MapIt',
@@ -21,9 +21,7 @@ export default function RootLayout({
         />
       </head>
       <body>
-        <TrpcProvider>
-          {children}
-        </TrpcProvider>
+        {children}
       </body>
     </html>
   );
