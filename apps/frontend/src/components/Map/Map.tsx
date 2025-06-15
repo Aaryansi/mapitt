@@ -103,7 +103,7 @@ export function Map({ segments, darkMode = false, traceRequested = false, onTrac
     );
     
     // Calculate max altitude based on distance (in meters)
-    const maxAltitude = Math.min(distance * 50000, 500000); // Max 500km altitude
+    const maxAltitude = Math.min(distance * 80000, 800000); // Max 800km altitude for better globe visibility
     
     for (let i = 0; i <= steps; i++) {
       const t = i / steps;
@@ -143,7 +143,7 @@ export function Map({ segments, darkMode = false, traceRequested = false, onTrac
       const data = await response.json();
       if (data.routes && data.routes[0]) {
         // Add slight elevation for ground routes
-        const elevation = mode === 'train' ? 30 : mode === 'drive' ? 20 : 10;
+        const elevation = mode === 'train' ? 50 : mode === 'drive' ? 30 : 20;
         return data.routes[0].geometry.coordinates.map((coord: number[]) => 
           [coord[0], coord[1], elevation] as [number, number, number]
         );
@@ -151,7 +151,7 @@ export function Map({ segments, darkMode = false, traceRequested = false, onTrac
     } catch (error) {
       console.error('Error fetching route:', error);
     }
-    return [[start[0], start[1], 10], [end[0], end[1], 10]];
+    return [[start[0], start[1], 20], [end[0], end[1], 20]];
   };
 
   // Build path based on transport mode
@@ -352,9 +352,10 @@ export function Map({ segments, darkMode = false, traceRequested = false, onTrac
       });
       
       mapRef.current.fitBounds(bounds, { 
-        padding: 50, 
+        padding: 80, 
         duration: 1000, 
-        pitch: seg.mode === 'flight' ? 60 : 45
+        pitch: seg.mode === 'flight' ? 60 : 45,
+        bearing: 0
       });
 
       // Wait for camera to settle
@@ -470,16 +471,33 @@ export function Map({ segments, darkMode = false, traceRequested = false, onTrac
     if (!mapContainer.current) return;
     const map = new mapboxgl.Map({
       container: mapContainer.current,
-      style: darkMode ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11',
-      center: [0, 20],
-      zoom: 2,
-      pitch: 45,
+      style: darkMode ? 'mapbox://styles/mapbox/navigation-night-v1' : 'mapbox://styles/mapbox/navigation-day-v1',
+      center: [0, 0],
+      zoom: 1.5,
+      pitch: 0,
       bearing: 0,
       antialias: true,
+      projection: 'globe'
     });
     mapRef.current = map;
     
+    // Add navigation controls
+    map.addControl(new mapboxgl.NavigationControl({
+      visualizePitch: true
+    }), 'top-right');
+    
+    // Add scale control
+    map.addControl(new mapboxgl.ScaleControl({
+      maxWidth: 80,
+      unit: 'metric'
+    }), 'bottom-right');
+    
     map.on('load', () => {
+      // Configure globe settings
+      map.setProjection('globe');
+      map.setPaintProperty('globe', 'globe-atmosphere-color', darkMode ? 'rgba(85, 150, 225, 0.5)' : 'rgba(85, 150, 225, 0.3)');
+      map.setPaintProperty('globe', 'globe-atmosphere-thickness', 2);
+      
       // 1. 3D Terrain DEM
       map.addSource('mapbox-dem', {
         type: 'raster-dem',
@@ -489,12 +507,14 @@ export function Map({ segments, darkMode = false, traceRequested = false, onTrac
       });
       map.setTerrain({ source: 'mapbox-dem', exaggeration: 1.5 });
 
-      // 2. Sky & Fog
+      // 2. Sky & Fog (optimized for globe projection)
       map.setFog({
-        'horizon-blend': 0.1,
-        color: darkMode ? 'rgb(17,24,39)' : 'rgb(243,244,246)',
-        'space-color': darkMode ? 'rgb(10,10,25)' : 'rgb(255,255,255)',
-        'star-intensity': 0.3
+        'range': [0.5, 10],
+        'horizon-blend': 0.05,
+        'color': darkMode ? 'rgb(17,24,39)' : 'rgb(186,210,235)',
+        'high-color': darkMode ? 'rgb(36,92,223)' : 'rgb(36,92,223)',
+        'space-color': darkMode ? 'rgb(10,10,25)' : 'rgb(220,159,159)',
+        'star-intensity': darkMode ? 0.5 : 0.15
       });
 
       // 3. 3D Buildings
@@ -579,7 +599,7 @@ export function Map({ segments, darkMode = false, traceRequested = false, onTrac
       bounds.extend(s.from.coordinates);
       bounds.extend(s.to.coordinates);
     });
-    mapRef.current!.fitBounds(bounds, { padding: 100 });
+    mapRef.current!.fitBounds(bounds, { padding: 150 });
   }, [segments]);
 
   useEffect(() => {
